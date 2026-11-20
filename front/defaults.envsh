@@ -1,0 +1,10 @@
+# Sourced by the official nginx image's entrypoint (mount as /docker-entrypoint.d/16-defaults.envsh),
+# before it runs envsubst on the template (and after 15-local-resolvers, whose result RESOLVER defaults to).
+# envsubst itself has no defaults. The file must be executable (chmod +x).
+: "${UI_UPSTREAM:=ui:3010}"
+: "${RESET_UPSTREAM:=password-reset:8080}"
+: "${BASE_PATH:=/password-reset}"
+: "${RESOLVER:=${NGINX_LOCAL_RESOLVERS:-127.0.0.11}}"
+# Empty means: trust the incoming X-Forwarded-Proto, else $scheme (see the template).
+: "${FORWARDED_PROTO:=}"
+export FORWARDED_PROTO UI_UPSTREAM RESET_UPSTREAM BASE_PATH RESOLVER

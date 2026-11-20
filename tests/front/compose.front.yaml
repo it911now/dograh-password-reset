@@ -1,0 +1,66 @@
+# Throwaway stack for the nginx front test. Run via test_front.sh (project name dpr-front-test).
+# Real Postgres + the real add-on, a stub Dograh API (health endpoint only) and a stub UI.
+# Only the front publishes a port: a random high port on 127.0.0.1.
+services:
+  pg:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test-only-password
+      POSTGRES_DB: dograh_test
+    volumes:
+      - ../dograh_users.sql:/docker-entrypoint-initdb.d/users.sql:ro
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dograh_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./stub-api.conf:/etc/nginx/conf.d/default.conf:ro
+
+  ui:
+    image: node:20-alpine
+    working_dir: /stub
+    command: ["node", "server.js"]
+    volumes:
+      - ./stub-ui:/stub:ro
+
+  password-reset:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: base
+    depends_on:
+      pg:
+        condition: service_healthy
+      api:
+        condition: service_started
+    environment:
+      DATABASE_URL_FILE: /run/secrets/db_url
+      DOGRAH_API_URL: http://api:8000
+      PUBLIC_BASE_URL: http://localhost
+      BASE_PATH: /password-reset
+      MAIL_TRANSPORT: webhook
+      MAIL_WEBHOOK_URL: http://api:8000/mail
+      MAIL_WEBHOOK_SECRET_FILE: /run/secrets/webhook_secret
+    volumes:
+      - ${SECRETS_DIR:?set by test_front.sh}:/run/secrets:ro
+
+  front:
+    image: nginx:1.27-alpine
+    depends_on:
+      - ui
+      - password-reset
+    # Empty by default so the test also covers the defaults; TEST_FORWARDED_PROTO is for manual runs.
+    environment:
+      FORWARDED_PROTO: ${TEST_FORWARDED_PROTO:-}
+    volumes:
+      - ../../front/defaults.envsh:/docker-entrypoint.d/16-defaults.envsh:ro
+      - ../../front/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    ports:
+      - "127.0.0.1::80"

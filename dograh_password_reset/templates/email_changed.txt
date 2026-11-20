@@ -1,0 +1,11 @@
+Hello,
+
+The password for your {{ product_name }} account was just changed.
+
+If you made this change, no action is needed.
+
+If you did not make this change, contact your administrator right away.
+{% if support_text %}
+
+{{ support_text }}
+{% endif %}

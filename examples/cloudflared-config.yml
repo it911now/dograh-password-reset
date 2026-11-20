@@ -1,0 +1,22 @@
+# Example cloudflared ingress for a Dograh host (INSTALL.md, step 4). Replace the placeholders.
+# Rules are checked top to bottom and the first match wins, so the reset path must sit above the catch-all.
+tunnel: TUNNEL-UUID
+credentials-file: /etc/cloudflared/TUNNEL-UUID.json
+
+ingress:
+  # Your existing Dograh rules go here, above the catch-all. For example, the API:
+  # - hostname: dograh.example.com
+  #   path: ^/api/v1/
+  #   service: http://127.0.0.1:API-PORT    # the host port your Dograh API is published on
+
+  # The reset pages go straight to the add-on (127.0.0.1:8081 in docker-compose.password-reset.yaml).
+  - hostname: dograh.example.com
+    path: ^/password-reset/
+    service: http://127.0.0.1:8081
+
+  # Everything else goes to the nginx front, which serves Dograh's UI and adds the "Forgot password?" link.
+  # Without the front (INSTALL.md, step 5), point this at Dograh's UI port instead.
+  - hostname: dograh.example.com
+    service: http://127.0.0.1:8088
+
+  - service: http_status:404

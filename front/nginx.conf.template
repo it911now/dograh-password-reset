@@ -1,0 +1,110 @@
+# nginx front for Dograh: proxies the UI unchanged (websockets included), sends BASE_PATH/ to
+# the password-reset add-on, and adds a <script> tag to every HTML page so the add-on's
+# inject.js can put a "Forgot password?" link under the login form.
+#
+# Mount as /etc/nginx/templates/default.conf.template in the official nginx image; it runs
+# envsubst on start. Variables (set them in the container environment):
+#   UI_UPSTREAM      host:port of the Dograh UI        (default ui:3010)
+#   RESET_UPSTREAM   host:port of the add-on           (default password-reset:8080)
+#   BASE_PATH        public path of the add-on         (default /password-reset; not "/")
+#   FORWARDED_PROTO  value for X-Forwarded-Proto       (default empty, see below)
+#   RESOLVER         DNS server for upstream names     (default: container resolver)
+# envsubst has no defaults; mount front/defaults.envsh as /docker-entrypoint.d/16-defaults.envsh
+# to get the ones above, or set all five yourself (FORWARDED_PROTO may be left empty).
+
+# X-Forwarded-Proto sent to the UI and the add-on. Default (FORWARDED_PROTO empty): keep the
+# client's X-Forwarded-Proto if there is one (a TLS-terminating tunnel or proxy in front sets it
+# to https), else the scheme this front saw. Only do that when the front is reachable solely
+# through that proxy. If the front is exposed to the internet directly, set FORWARDED_PROTO
+# (e.g. https) so a client-supplied header is never trusted; it is then used unconditionally.
+map $http_x_forwarded_proto $dpr_proto_auto {
+    default $http_x_forwarded_proto;
+    ""      $scheme;
+}
+map "${FORWARDED_PROTO}" $dpr_proto {
+    ""      $dpr_proto_auto;
+    default "${FORWARDED_PROTO}";
+}
+
+# Send "Connection: upgrade" only when the client asked for an upgrade (websocket). For plain
+# requests the Connection header is sent empty, which drops it, so the HTTP/1.1 upstream
+# connection stays open (keepalive) instead of being closed after each request.
+map $http_upgrade $dpr_connection_upgrade {
+    default upgrade;
+    ""      "";
+}
+
+# Reset links carry a single-use token in the query string (/password-reset/new?token=...).
+# Requests with "token=" in the URL are left out of the access log.
+map $request_uri $dpr_loggable {
+    ~*token=  0;
+    default   1;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    # Upstream names are resolved per request (variables in proxy_pass below), so the front
+    # starts and keeps serving the UI even while the add-on container is down or restarting.
+    resolver ${RESOLVER} valid=10s ipv6=off;
+    set $dpr_ui    ${UI_UPSTREAM};
+    set $dpr_reset ${RESET_UPSTREAM};
+
+    client_max_body_size 50m;
+
+    access_log /var/log/nginx/access.log main if=$dpr_loggable;
+
+    # Answered by nginx itself (container healthcheck): does not depend on Dograh or the add-on.
+    location = /__front_health {
+        access_log off;
+        return 204;
+    }
+
+    # The bare path serves the same pages. An internal rewrite, not a redirect: a redirect would be
+    # built from nginx's own scheme and port, which is wrong behind a TLS-terminating tunnel.
+    location = ${BASE_PATH} {
+        rewrite ^ ${BASE_PATH}/ last;
+    }
+
+    # The add-on. Its pages carry their own security headers.
+    location ${BASE_PATH}/ {
+        proxy_pass http://$dpr_reset;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $dpr_proto;
+        proxy_connect_timeout 5s;
+    }
+
+    # Everything else is the Dograh UI, passed through untouched except for the script tag.
+    location / {
+        proxy_pass http://$dpr_ui;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $dpr_proto;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $dpr_connection_upgrade;
+        proxy_read_timeout 3600s;
+        proxy_connect_timeout 5s;
+
+        # Do not hold responses back: Next.js streams HTML and the UI uses websockets/SSE.
+        # sub_filter works on the stream, so buffering is not needed for it.
+        proxy_buffering off;
+
+        # Next.js can send large response headers (preload Link lists, Vary); the default
+        # 4k/8k header buffer would turn that into a 502.
+        proxy_buffer_size 16k;
+        proxy_buffers 8 16k;
+
+        # sub_filter cannot read compressed bodies.
+        proxy_set_header Accept-Encoding "";
+
+        sub_filter '</body>' '<script src="${BASE_PATH}/inject.js" defer></script></body>';
+        sub_filter_once on;
+        sub_filter_types text/html;
+    }
+}

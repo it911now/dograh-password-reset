@@ -1,0 +1,15 @@
+Hello,
+
+We received a request to reset the password for your {{ product_name }} account.
+
+Reset your password with this link:
+
+{{ link }}
+
+The link expires in {{ ttl_minutes }} minute{{ "" if ttl_minutes == 1 else "s" }} and works only once.
+
+If you didn't ask for this, ignore this email; your password stays the same.
+{% if support_text %}
+
+{{ support_text }}
+{% endif %}
